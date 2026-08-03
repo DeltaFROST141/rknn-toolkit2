@@ -15,9 +15,9 @@
 
 重要结论（会在输出中体现）
 --------------------------
-M1@30fps 周期≈33ms，M3 包长 70ms 且不可分段。若 guard 要保护
-每一次 M1 硬截止期，则 M3 永远无法发送。latest-only 下 M3 每跑
-一次，M1 会永久丢掉约 2 个相机周期，故平均帧率也会受损。
+默认 M1 采集上限 15fps（周期≈66.7ms）。M3 包长 70ms 仍略大于
+该周期，故硬门控仍会饿死 M3；软门控 + SP + CBS 在 M1/M2/M3=
+15/15/5 时可接近同时达标。
 """
 
 from __future__ import annotations
@@ -91,6 +91,8 @@ class BaseSimulator:
         self.busy_model: Optional[str] = None
         self.busy_job: Optional[Job] = None
         self.total_busy_ms = 0.0
+        # [(start_ms, end_ms, model, frame_id), ...]
+        self.intervals: List[tuple] = []
 
     def period(self, st: ModelState) -> float:
         return SECOND / st.cfg.target_fps
@@ -133,6 +135,7 @@ class BaseSimulator:
         self.busy_model = name
         self.busy_job = job
         self.busy_until = self.now + st.cfg.cost_ms
+        self.intervals.append((self.now, self.busy_until, name, job.frame_id))
 
     def next_release_event(self) -> float:
         return min(st.next_release_ts for st in self.states.values())
@@ -141,6 +144,10 @@ class BaseSimulator:
         out = {
             "sim_duration_s": self.duration_ms / SECOND,
             "link_util": self.total_busy_ms / self.duration_ms,
+            "intervals": [
+                {"start_ms": s, "end_ms": e, "model": m, "frame_id": fid}
+                for s, e, m, fid in self.intervals
+            ],
             "models": {},
         }
         dur_s = self.duration_ms / SECOND
@@ -216,7 +223,7 @@ class CbsSpGuardSimulator(BaseSimulator):
     guard 模式
     ----------
     hard: 若 now→M1下次释放 的空隙 < M3.cost+margin，则不开闸。
-          M1@30fps 时空隙≤33ms < 72ms，M3 会饿死（用于说明硬门控不可行）。
+          M1@15fps 时空隙≤66.7ms < 72ms，M3 仍会饿死（硬门控不可行）。
     soft: 按 M1 完成帧相对目标的滞后做准入（允许抖动，保平均帧率）。
           M1 已落后超过 lag_tol 帧时不开 M3 闸；SP+CBS 仍优先 M1。
     """
@@ -393,6 +400,27 @@ def theoretical_note(m1_fps: float, m1_cost: float, m3_fps: float, m3_cost: floa
     )
 
 
+MODEL_COLORS = {
+    "M1": "#2563eb",
+    "M2": "#16a34a",
+    "M3": "#dc2626",
+}
+
+
+def run_pair(
+    models: List[ModelCfg],
+    duration_s: float,
+    guard_mode: str,
+    guard_margin_ms: float,
+) -> tuple:
+    dur = duration_s * SECOND
+    serial = SerialRoundRobin(clone_models(models), dur).run()
+    qos = CbsSpGuardSimulator(
+        clone_models(models), dur, guard_mode=guard_mode, guard_margin_ms=guard_margin_ms
+    ).run()
+    return serial, qos
+
+
 def run_case(
     title: str,
     models: List[ModelCfg],
@@ -400,17 +428,262 @@ def run_case(
     guard_mode: str,
     guard_margin_ms: float,
 ) -> str:
-    dur = duration_s * SECOND
-    serial = SerialRoundRobin(clone_models(models), dur).run()
-    qos = CbsSpGuardSimulator(
-        clone_models(models), dur, guard_mode=guard_mode, guard_margin_ms=guard_margin_ms
-    ).run()
+    serial, qos = run_pair(models, duration_s, guard_mode, guard_margin_ms)
     return (
         f"\n****** {title} | guard={guard_mode} ******\n"
         + fmt_metrics("串行轮询 RR", serial)
         + "\n\n"
         + fmt_metrics(f"CBS+SP+Guard({guard_mode})", qos)
     )
+
+
+def ascii_gantt(metrics: Dict, window_ms: float = 1000.0, width: int = 80) -> str:
+    """终端可读的时间线（默认前 window_ms）。"""
+    lines = [f"ASCII Gantt  0..{window_ms:.0f}ms  (每格≈{window_ms/width:.1f}ms)"]
+    names = list(metrics["models"].keys())
+    for name in names:
+        row = ["."] * width
+        for iv in metrics.get("intervals", []):
+            if iv["model"] != name:
+                continue
+            if iv["start_ms"] >= window_ms:
+                continue
+            a = int(iv["start_ms"] / window_ms * width)
+            b = int(min(iv["end_ms"], window_ms) / window_ms * width)
+            b = max(b, a + 1)
+            for i in range(max(0, a), min(width, b)):
+                row[i] = name[-1]  # 1/2/3
+        lines.append(f"{name} |{''.join(row)}|")
+    lines.append("图例: '.'空闲  '1'=M1  '2'=M2  '3'=M3")
+    return "\n".join(lines)
+
+
+def _svg_gantt(metrics: Dict, title: str, window_ms: float, width: int = 900) -> str:
+    names = list(metrics["models"].keys())
+    row_h = 36
+    top = 36
+    height = top + row_h * len(names) + 28
+    left, right = 56, 16
+    plot_w = width - left - right
+
+    parts = [
+        f'<svg xmlns="http://www.w3.org/2000/svg" width="{width}" height="{height}" '
+        f'viewBox="0 0 {width} {height}">',
+        f'<rect width="100%" height="100%" fill="#0f172a"/>',
+        f'<text x="{left}" y="22" fill="#e2e8f0" font-size="14" font-family="sans-serif">{title}</text>',
+    ]
+    # grid
+    for i in range(0, int(window_ms) + 1, 100):
+        x = left + plot_w * (i / window_ms)
+        parts.append(
+            f'<line x1="{x:.1f}" y1="{top-4}" x2="{x:.1f}" y2="{height-20}" '
+            f'stroke="#334155" stroke-width="1"/>'
+        )
+        parts.append(
+            f'<text x="{x:.1f}" y="{height-6}" fill="#94a3b8" font-size="10" '
+            f'text-anchor="middle" font-family="sans-serif">{i}</text>'
+        )
+
+    for idx, name in enumerate(names):
+        y = top + idx * row_h
+        parts.append(
+            f'<text x="8" y="{y + 22}" fill="#e2e8f0" font-size="13" font-family="sans-serif">{name}</text>'
+        )
+        parts.append(
+            f'<rect x="{left}" y="{y + 6}" width="{plot_w}" height="22" rx="4" fill="#1e293b"/>'
+        )
+        color = MODEL_COLORS.get(name, "#94a3b8")
+        for iv in metrics.get("intervals", []):
+            if iv["model"] != name or iv["start_ms"] >= window_ms:
+                continue
+            x0 = left + plot_w * (iv["start_ms"] / window_ms)
+            x1 = left + plot_w * (min(iv["end_ms"], window_ms) / window_ms)
+            w = max(x1 - x0, 1.5)
+            tip = f"{name} #{iv['frame_id']}  {iv['start_ms']:.1f}-{iv['end_ms']:.1f}ms"
+            parts.append(
+                f'<rect x="{x0:.2f}" y="{y + 6}" width="{w:.2f}" height="22" rx="3" '
+                f'fill="{color}" opacity="0.92"><title>{tip}</title></rect>'
+            )
+    parts.append("</svg>")
+    return "\n".join(parts)
+
+
+def _svg_fps_bars(serial: Dict, qos: Dict, width: int = 900) -> str:
+    names = list(serial["models"].keys())
+    left, top, bar_h, gap = 56, 40, 18, 48
+    height = top + gap * len(names) + 40
+    plot_w = width - left - 24
+    max_fps = max(
+        max(serial["models"][n]["target_fps"], serial["models"][n]["achieved_fps"], qos["models"][n]["achieved_fps"])
+        for n in names
+    )
+    max_fps = max(max_fps, 1.0)
+
+    def bar(x, y, w, h, color, label=""):
+        return (
+            f'<rect x="{x:.1f}" y="{y:.1f}" width="{max(w,0):.1f}" height="{h}" rx="3" fill="{color}">'
+            f"<title>{label}</title></rect>"
+        )
+
+    parts = [
+        f'<svg xmlns="http://www.w3.org/2000/svg" width="{width}" height="{height}" '
+        f'viewBox="0 0 {width} {height}">',
+        '<rect width="100%" height="100%" fill="#0f172a"/>',
+        f'<text x="{left}" y="24" fill="#e2e8f0" font-size="14" font-family="sans-serif">'
+        f"帧率对比（灰=目标, 橙=RR, 青=CBS+SP+soft）</text>",
+    ]
+    for i, name in enumerate(names):
+        y0 = top + i * gap
+        t = serial["models"][name]["target_fps"]
+        a_rr = serial["models"][name]["achieved_fps"]
+        a_qos = qos["models"][name]["achieved_fps"]
+        parts.append(
+            f'<text x="8" y="{y0 + 28}" fill="#e2e8f0" font-size="13" font-family="sans-serif">{name}</text>'
+        )
+        parts.append(bar(left, y0, plot_w * (t / max_fps), bar_h, "#475569", f"目标 {t:.1f}"))
+        parts.append(bar(left, y0 + bar_h + 2, plot_w * (a_rr / max_fps), bar_h, "#f59e0b", f"RR {a_rr:.2f}"))
+        parts.append(
+            bar(left, y0 + 2 * (bar_h + 2), plot_w * (a_qos / max_fps), bar_h, "#22d3ee", f"QoS {a_qos:.2f}")
+        )
+        parts.append(
+            f'<text x="{left + plot_w * (t / max_fps) + 6:.1f}" y="{y0 + 14}" fill="#94a3b8" '
+            f'font-size="11" font-family="sans-serif">T:{t:.0f} RR:{a_rr:.1f} QoS:{a_qos:.1f}</text>'
+        )
+    parts.append("</svg>")
+    return "\n".join(parts)
+
+
+def _svg_util(serial: Dict, qos: Dict, width: int = 900) -> str:
+    height = 120
+    left = 56
+    plot_w = width - left - 24
+
+    def util_row(y, label, util, color):
+        return (
+            f'<text x="8" y="{y + 16}" fill="#e2e8f0" font-size="13" font-family="sans-serif">{label}</text>'
+            f'<rect x="{left}" y="{y}" width="{plot_w}" height="20" rx="4" fill="#1e293b"/>'
+            f'<rect x="{left}" y="{y}" width="{plot_w * util:.1f}" height="20" rx="4" fill="{color}"/>'
+            f'<text x="{left + 8}" y="{y + 15}" fill="#0f172a" font-size="12" font-family="sans-serif">'
+            f"{util*100:.1f}%</text>"
+        )
+
+    return "\n".join(
+        [
+            f'<svg xmlns="http://www.w3.org/2000/svg" width="{width}" height="{height}" '
+            f'viewBox="0 0 {width} {height}">',
+            '<rect width="100%" height="100%" fill="#0f172a"/>',
+            f'<text x="{left}" y="22" fill="#e2e8f0" font-size="14" font-family="sans-serif">链路利用率</text>',
+            util_row(40, "RR", serial["link_util"], "#f59e0b"),
+            util_row(76, "QoS", qos["link_util"], "#22d3ee"),
+            "</svg>",
+        ]
+    )
+
+
+def write_html_report(
+    path: str,
+    serial: Dict,
+    qos: Dict,
+    title: str,
+    params: str,
+    window_ms: float = 1000.0,
+) -> None:
+    note = theoretical_note(
+        serial["models"]["M1"]["target_fps"],
+        serial["models"]["M1"]["cost_ms"],
+        serial["models"]["M3"]["target_fps"],
+        serial["models"]["M3"]["cost_ms"],
+    )
+    table_rows = []
+    for name in serial["models"]:
+        s = serial["models"][name]
+        q = qos["models"][name]
+        table_rows.append(
+            "<tr>"
+            f"<td>{name}</td>"
+            f"<td>{s['cost_ms']:.0f}ms</td>"
+            f"<td>{s['target_fps']:.1f}</td>"
+            f"<td>{s['achieved_fps']:.2f}</td>"
+            f"<td>{q['achieved_fps']:.2f}</td>"
+            f"<td>{s['dropped_on_enqueue']}</td>"
+            f"<td>{q['dropped_on_enqueue']}</td>"
+            f"<td>{q['blocked_guard']}</td>"
+            "</tr>"
+        )
+
+    html = f"""<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8"/>
+<title>{title}</title>
+<style>
+  body {{ margin:0; font-family: ui-sans-serif, system-ui, sans-serif; background:#020617; color:#e2e8f0; }}
+  main {{ max-width: 980px; margin: 0 auto; padding: 28px 20px 60px; }}
+  h1 {{ font-size: 22px; margin: 0 0 8px; }}
+  h2 {{ font-size: 16px; margin: 28px 0 10px; color:#93c5fd; }}
+  .sub {{ color:#94a3b8; font-size: 13px; line-height: 1.5; white-space: pre-wrap; }}
+  .card {{ background:#0f172a; border:1px solid #1e293b; border-radius:12px; padding:14px; margin:12px 0; }}
+  table {{ width:100%; border-collapse: collapse; font-size: 13px; }}
+  th, td {{ border-bottom:1px solid #1e293b; padding:8px 6px; text-align:left; }}
+  th {{ color:#93c5fd; font-weight:600; }}
+  .legend span {{ display:inline-block; width:12px; height:12px; border-radius:3px; margin-right:6px; }}
+</style>
+</head>
+<body>
+<main>
+  <h1>{title}</h1>
+  <div class="sub">{params}
+
+{note}</div>
+
+  <h2>1. 帧率达成</h2>
+  <div class="card">{_svg_fps_bars(serial, qos)}</div>
+
+  <h2>2. NPU 链路利用率</h2>
+  <div class="card">{_svg_util(serial, qos)}</div>
+
+  <h2>3. 调度甘特图（前 {window_ms:.0f} ms）</h2>
+  <div class="legend sub" style="margin-bottom:8px">
+    <span style="background:#2563eb"></span>M1
+    <span style="background:#16a34a;margin-left:12px"></span>M2
+    <span style="background:#dc2626;margin-left:12px"></span>M3
+    （鼠标悬停可看起止时间）
+  </div>
+  <div class="card">{_svg_gantt(serial, "串行轮询 RR", window_ms)}</div>
+  <div class="card">{_svg_gantt(qos, "CBS + SP + soft guard", window_ms)}</div>
+
+  <h2>4. 数值表</h2>
+  <div class="card">
+    <table>
+      <thead>
+        <tr>
+          <th>模型</th><th>耗时</th><th>目标fps</th>
+          <th>RR实测</th><th>QoS实测</th>
+          <th>RR丢帧</th><th>QoS丢帧</th><th>QoS门控挡</th>
+        </tr>
+      </thead>
+      <tbody>
+        {''.join(table_rows)}
+      </tbody>
+    </table>
+  </div>
+</main>
+</body>
+</html>
+"""
+    with open(path, "w", encoding="utf-8") as f:
+        f.write(html)
+
+
+def write_intervals_csv(path: str, metrics: Dict, label: str) -> None:
+    with open(path, "w", encoding="utf-8") as f:
+        f.write("scheduler,model,frame_id,start_ms,end_ms,duration_ms\n")
+        for iv in metrics.get("intervals", []):
+            f.write(
+                f"{label},{iv['model']},{iv['frame_id']},"
+                f"{iv['start_ms']:.3f},{iv['end_ms']:.3f},"
+                f"{iv['end_ms']-iv['start_ms']:.3f}\n"
+            )
 
 
 def main() -> None:
@@ -423,6 +696,14 @@ def main() -> None:
     p.add_argument("--m3-fps", type=float, default=5.0)
     p.add_argument("--m1-queue", type=int, default=1, help="M1 队列深度，>1 可追赶补帧")
     p.add_argument("--all-cases", action="store_true", help="跑多组对比场景")
+    p.add_argument(
+        "--html",
+        default="scripts/npu_cbs_scheduler_report.html",
+        help="可视化 HTML 报告路径（默认 scripts/npu_cbs_scheduler_report.html）",
+    )
+    p.add_argument("--no-html", action="store_true", help="不生成 HTML")
+    p.add_argument("--viz-window", type=float, default=1000.0, help="甘特图窗口长度 ms")
+    p.add_argument("--csv-dir", default="", help="若指定则导出 RR/QoS 区间 CSV")
     args = p.parse_args()
 
     base = [
@@ -432,24 +713,47 @@ def main() -> None:
     ]
 
     print("RKNN 单核调度仿真 (CBS/TokenBucket + SP + M3 guard band)")
-    print(
+    params = (
         f"参数: M1=7ms@{args.m1_fps}fps(q={args.m1_queue}), "
         f"M2=15ms@{args.m2_fps}fps, M3=70ms@{args.m3_fps}fps, "
-        f"guard={args.guard_mode}, margin={args.guard_margin}ms\n"
+        f"guard={args.guard_mode}, margin={args.guard_margin}ms, "
+        f"sim={args.duration}s"
     )
+    print(params + "\n")
     print(theoretical_note(args.m1_fps, 7.0, args.m3_fps, 70.0))
-    print(
-        run_case(
-            "主场景",
-            base,
-            args.duration,
-            args.guard_mode,
-            args.guard_margin,
+
+    serial, qos = run_pair(base, args.duration, args.guard_mode, args.guard_margin)
+    print("\n****** 主场景 | guard={} ******".format(args.guard_mode))
+    print(fmt_metrics("串行轮询 RR", serial))
+    print()
+    print(fmt_metrics(f"CBS+SP+Guard({args.guard_mode})", qos))
+    print()
+    print("--- RR 时间线 ---")
+    print(ascii_gantt(serial, window_ms=args.viz_window))
+    print()
+    print("--- QoS 时间线 ---")
+    print(ascii_gantt(qos, window_ms=args.viz_window))
+
+    if not args.no_html:
+        write_html_report(
+            args.html,
+            serial,
+            qos,
+            title="RKNN 单核调度可视化：RR vs CBS+SP+soft",
+            params=params,
+            window_ms=args.viz_window,
         )
-    )
+        print(f"\nHTML 报告已写入: {args.html}")
+
+    if args.csv_dir:
+        import os
+
+        os.makedirs(args.csv_dir, exist_ok=True)
+        write_intervals_csv(os.path.join(args.csv_dir, "intervals_rr.csv"), serial, "RR")
+        write_intervals_csv(os.path.join(args.csv_dir, "intervals_qos.csv"), qos, "QoS")
+        print(f"CSV 已写入: {args.csv_dir}")
 
     if args.all_cases:
-        # 硬门控：M1 周期 66.7ms < M3 70ms，仍会饿死 M3
         print(
             run_case(
                 "对照：硬门控（保护每次 M1 截止期）",
@@ -463,7 +767,6 @@ def main() -> None:
                 args.guard_margin,
             )
         )
-        # M1 允许浅缓冲追赶
         print(
             run_case(
                 "对照：M1 队列深度=2（允许短追赶）",
@@ -477,7 +780,6 @@ def main() -> None:
                 args.guard_margin,
             )
         )
-        # 过载：M3 要更高帧率
         print(
             run_case(
                 "对照：过载 M3@8fps",
