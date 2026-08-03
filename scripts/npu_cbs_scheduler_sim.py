@@ -458,123 +458,182 @@ def ascii_gantt(metrics: Dict, window_ms: float = 1000.0, width: int = 80) -> st
     return "\n".join(lines)
 
 
-def _svg_gantt(metrics: Dict, title: str, window_ms: float, width: int = 900) -> str:
+def _svg_shell(width: int, height: int) -> str:
+    return (
+        f'<svg xmlns="http://www.w3.org/2000/svg" width="100%" height="{height}" '
+        f'viewBox="0 0 {width} {height}" preserveAspectRatio="xMidYMid meet" '
+        f'style="display:block;max-width:100%;height:auto;">'
+        f'<rect width="{width}" height="{height}" fill="#0f172a"/>'
+    )
+
+
+def _svg_gantt(metrics: Dict, title: str, window_ms: float, width: int = 920, clip_id: str = "ganttClip") -> str:
     names = list(metrics["models"].keys())
-    row_h = 36
-    top = 36
-    height = top + row_h * len(names) + 28
-    left, right = 56, 16
+    row_h = 44
+    top = 40
+    axis_h = 24
+    height = top + row_h * len(names) + axis_h
+    left, right = 48, 20
     plot_w = width - left - right
+    plot_bottom = top + row_h * len(names)
 
     parts = [
-        f'<svg xmlns="http://www.w3.org/2000/svg" width="{width}" height="{height}" '
-        f'viewBox="0 0 {width} {height}">',
-        f'<rect width="100%" height="100%" fill="#0f172a"/>',
-        f'<text x="{left}" y="22" fill="#e2e8f0" font-size="14" font-family="sans-serif">{title}</text>',
+        _svg_shell(width, height),
+        f'<text x="{left}" y="24" fill="#e2e8f0" font-size="14" font-family="sans-serif">{title}</text>',
+        # 同一页面多张甘特图时 clipPath id 必须唯一，否则会互相裁切/叠层
+        f'<defs><clipPath id="{clip_id}"><rect x="{left}" y="{top}" width="{plot_w}" '
+        f'height="{plot_bottom - top}"/></clipPath></defs>',
     ]
-    # grid
     for i in range(0, int(window_ms) + 1, 100):
         x = left + plot_w * (i / window_ms)
         parts.append(
-            f'<line x1="{x:.1f}" y1="{top-4}" x2="{x:.1f}" y2="{height-20}" '
+            f'<line x1="{x:.1f}" y1="{top}" x2="{x:.1f}" y2="{plot_bottom}" '
             f'stroke="#334155" stroke-width="1"/>'
         )
         parts.append(
-            f'<text x="{x:.1f}" y="{height-6}" fill="#94a3b8" font-size="10" '
+            f'<text x="{x:.1f}" y="{height - 6}" fill="#94a3b8" font-size="10" '
             f'text-anchor="middle" font-family="sans-serif">{i}</text>'
         )
 
+    parts.append(f'<g clip-path="url(#{clip_id})">')
     for idx, name in enumerate(names):
         y = top + idx * row_h
+        bar_y = y + 10
+        bar_h = 24
         parts.append(
-            f'<text x="8" y="{y + 22}" fill="#e2e8f0" font-size="13" font-family="sans-serif">{name}</text>'
+            f'<text x="10" y="{y + 28}" fill="#e2e8f0" font-size="13" font-family="sans-serif">{name}</text>'
         )
         parts.append(
-            f'<rect x="{left}" y="{y + 6}" width="{plot_w}" height="22" rx="4" fill="#1e293b"/>'
+            f'<rect x="{left}" y="{bar_y}" width="{plot_w}" height="{bar_h}" rx="4" fill="#1e293b"/>'
         )
         color = MODEL_COLORS.get(name, "#94a3b8")
-        for iv in metrics.get("intervals", []):
-            if iv["model"] != name or iv["start_ms"] >= window_ms:
-                continue
+        # 同模型区间按时排序，避免绘制顺序造成视觉叠层错觉
+        ivs = sorted(
+            (
+                iv
+                for iv in metrics.get("intervals", [])
+                if iv["model"] == name and iv["start_ms"] < window_ms
+            ),
+            key=lambda x: x["start_ms"],
+        )
+        for iv in ivs:
             x0 = left + plot_w * (iv["start_ms"] / window_ms)
             x1 = left + plot_w * (min(iv["end_ms"], window_ms) / window_ms)
-            w = max(x1 - x0, 1.5)
+            w = max(x1 - x0, 2.0)
             tip = f"{name} #{iv['frame_id']}  {iv['start_ms']:.1f}-{iv['end_ms']:.1f}ms"
             parts.append(
-                f'<rect x="{x0:.2f}" y="{y + 6}" width="{w:.2f}" height="22" rx="3" '
-                f'fill="{color}" opacity="0.92"><title>{tip}</title></rect>'
+                f'<rect x="{x0:.2f}" y="{bar_y}" width="{w:.2f}" height="{bar_h}" rx="2" '
+                f'fill="{color}" stroke="#0f172a" stroke-width="0.8">'
+                f"<title>{tip}</title></rect>"
             )
-    parts.append("</svg>")
+    parts.append("</g></svg>")
     return "\n".join(parts)
 
 
-def _svg_fps_bars(serial: Dict, qos: Dict, width: int = 900) -> str:
+def _svg_fps_bars(serial: Dict, qos: Dict, width: int = 920) -> str:
+    """每模型一组三根水平条，组间距必须 > 三根条总高度，避免堆叠。"""
     names = list(serial["models"].keys())
-    left, top, bar_h, gap = 56, 40, 18, 48
-    height = top + gap * len(names) + 40
-    plot_w = width - left - 24
+    left = 48
+    right_label_w = 130
+    top = 48
+    bar_h = 16
+    bar_gap = 4
+    bars_block = 3 * bar_h + 2 * bar_gap  # 56
+    group_gap = 18
+    group_h = bars_block + group_gap  # 74
+    height = top + group_h * len(names) + 8
+    plot_w = width - left - right_label_w
+
     max_fps = max(
-        max(serial["models"][n]["target_fps"], serial["models"][n]["achieved_fps"], qos["models"][n]["achieved_fps"])
+        max(
+            serial["models"][n]["target_fps"],
+            serial["models"][n]["achieved_fps"],
+            qos["models"][n]["achieved_fps"],
+        )
         for n in names
     )
     max_fps = max(max_fps, 1.0)
 
     def bar(x, y, w, h, color, label=""):
         return (
-            f'<rect x="{x:.1f}" y="{y:.1f}" width="{max(w,0):.1f}" height="{h}" rx="3" fill="{color}">'
+            f'<rect x="{x:.1f}" y="{y:.1f}" width="{max(w, 0):.1f}" height="{h}" rx="3" fill="{color}">'
             f"<title>{label}</title></rect>"
         )
 
     parts = [
-        f'<svg xmlns="http://www.w3.org/2000/svg" width="{width}" height="{height}" '
-        f'viewBox="0 0 {width} {height}">',
-        '<rect width="100%" height="100%" fill="#0f172a"/>',
-        f'<text x="{left}" y="24" fill="#e2e8f0" font-size="14" font-family="sans-serif">'
-        f"帧率对比（灰=目标, 橙=RR, 青=CBS+SP+soft）</text>",
+        _svg_shell(width, height),
+        f'<text x="{left}" y="22" fill="#e2e8f0" font-size="14" font-family="sans-serif">'
+        f"帧率对比</text>",
+        # legend
+        f'<rect x="{left}" y="30" width="12" height="12" rx="2" fill="#475569"/>',
+        f'<text x="{left + 16}" y="40" fill="#94a3b8" font-size="11" font-family="sans-serif">目标</text>',
+        f'<rect x="{left + 56}" y="30" width="12" height="12" rx="2" fill="#f59e0b"/>',
+        f'<text x="{left + 72}" y="40" fill="#94a3b8" font-size="11" font-family="sans-serif">RR</text>',
+        f'<rect x="{left + 104}" y="30" width="12" height="12" rx="2" fill="#22d3ee"/>',
+        f'<text x="{left + 120}" y="40" fill="#94a3b8" font-size="11" font-family="sans-serif">QoS</text>',
     ]
     for i, name in enumerate(names):
-        y0 = top + i * gap
+        y0 = top + i * group_h
         t = serial["models"][name]["target_fps"]
         a_rr = serial["models"][name]["achieved_fps"]
         a_qos = qos["models"][name]["achieved_fps"]
         parts.append(
-            f'<text x="8" y="{y0 + 28}" fill="#e2e8f0" font-size="13" font-family="sans-serif">{name}</text>'
+            f'<text x="10" y="{y0 + bars_block / 2 + 4:.1f}" fill="#e2e8f0" font-size="13" '
+            f'font-family="sans-serif">{name}</text>'
         )
-        parts.append(bar(left, y0, plot_w * (t / max_fps), bar_h, "#475569", f"目标 {t:.1f}"))
-        parts.append(bar(left, y0 + bar_h + 2, plot_w * (a_rr / max_fps), bar_h, "#f59e0b", f"RR {a_rr:.2f}"))
+        # track background for group
         parts.append(
-            bar(left, y0 + 2 * (bar_h + 2), plot_w * (a_qos / max_fps), bar_h, "#22d3ee", f"QoS {a_qos:.2f}")
+            f'<rect x="{left}" y="{y0 - 4}" width="{plot_w}" height="{bars_block + 8}" '
+            f'rx="6" fill="#111827"/>'
+        )
+        rows = [
+            (t, "#475569", f"目标 {t:.2f}"),
+            (a_rr, "#f59e0b", f"RR {a_rr:.2f}"),
+            (a_qos, "#22d3ee", f"QoS {a_qos:.2f}"),
+        ]
+        for j, (val, color, lab) in enumerate(rows):
+            y = y0 + j * (bar_h + bar_gap)
+            parts.append(bar(left, y, plot_w * (val / max_fps), bar_h, color, lab))
+        # 数值固定放右侧，避免与长条重叠
+        lx = left + plot_w + 8
+        parts.append(
+            f'<text x="{lx}" y="{y0 + 12}" fill="#94a3b8" font-size="11" font-family="sans-serif">'
+            f"T {t:.1f}</text>"
         )
         parts.append(
-            f'<text x="{left + plot_w * (t / max_fps) + 6:.1f}" y="{y0 + 14}" fill="#94a3b8" '
-            f'font-size="11" font-family="sans-serif">T:{t:.0f} RR:{a_rr:.1f} QoS:{a_qos:.1f}</text>'
+            f'<text x="{lx}" y="{y0 + 12 + bar_h + bar_gap}" fill="#fbbf24" font-size="11" '
+            f'font-family="sans-serif">RR {a_rr:.1f}</text>'
+        )
+        parts.append(
+            f'<text x="{lx}" y="{y0 + 12 + 2 * (bar_h + bar_gap)}" fill="#67e8f9" font-size="11" '
+            f'font-family="sans-serif">QoS {a_qos:.1f}</text>'
         )
     parts.append("</svg>")
     return "\n".join(parts)
 
 
-def _svg_util(serial: Dict, qos: Dict, width: int = 900) -> str:
-    height = 120
-    left = 56
-    plot_w = width - left - 24
+def _svg_util(serial: Dict, qos: Dict, width: int = 920) -> str:
+    height = 130
+    left = 48
+    right = 64
+    plot_w = width - left - right
 
     def util_row(y, label, util, color):
+        pct = util * 100.0
         return (
-            f'<text x="8" y="{y + 16}" fill="#e2e8f0" font-size="13" font-family="sans-serif">{label}</text>'
-            f'<rect x="{left}" y="{y}" width="{plot_w}" height="20" rx="4" fill="#1e293b"/>'
-            f'<rect x="{left}" y="{y}" width="{plot_w * util:.1f}" height="20" rx="4" fill="{color}"/>'
-            f'<text x="{left + 8}" y="{y + 15}" fill="#0f172a" font-size="12" font-family="sans-serif">'
-            f"{util*100:.1f}%</text>"
+            f'<text x="10" y="{y + 16}" fill="#e2e8f0" font-size="13" font-family="sans-serif">{label}</text>'
+            f'<rect x="{left}" y="{y}" width="{plot_w}" height="22" rx="4" fill="#1e293b"/>'
+            f'<rect x="{left}" y="{y}" width="{plot_w * min(util, 1.0):.1f}" height="22" rx="4" fill="{color}"/>'
+            f'<text x="{left + plot_w + 8}" y="{y + 16}" fill="#e2e8f0" font-size="12" '
+            f'font-family="sans-serif">{pct:.1f}%</text>'
         )
 
     return "\n".join(
         [
-            f'<svg xmlns="http://www.w3.org/2000/svg" width="{width}" height="{height}" '
-            f'viewBox="0 0 {width} {height}">',
-            '<rect width="100%" height="100%" fill="#0f172a"/>',
-            f'<text x="{left}" y="22" fill="#e2e8f0" font-size="14" font-family="sans-serif">链路利用率</text>',
-            util_row(40, "RR", serial["link_util"], "#f59e0b"),
-            util_row(76, "QoS", qos["link_util"], "#22d3ee"),
+            _svg_shell(width, height),
+            f'<text x="{left}" y="24" fill="#e2e8f0" font-size="14" font-family="sans-serif">链路利用率</text>',
+            util_row(44, "RR", serial["link_util"], "#f59e0b"),
+            util_row(84, "QoS", qos["link_util"], "#22d3ee"),
             "</svg>",
         ]
     )
@@ -622,11 +681,12 @@ def write_html_report(
   h1 {{ font-size: 22px; margin: 0 0 8px; }}
   h2 {{ font-size: 16px; margin: 28px 0 10px; color:#93c5fd; }}
   .sub {{ color:#94a3b8; font-size: 13px; line-height: 1.5; white-space: pre-wrap; }}
-  .card {{ background:#0f172a; border:1px solid #1e293b; border-radius:12px; padding:14px; margin:12px 0; }}
+  .card {{ background:#0f172a; border:1px solid #1e293b; border-radius:12px; padding:14px; margin:12px 0; overflow:hidden; }}
+  .card svg {{ display:block; width:100%; height:auto; }}
   table {{ width:100%; border-collapse: collapse; font-size: 13px; }}
   th, td {{ border-bottom:1px solid #1e293b; padding:8px 6px; text-align:left; }}
   th {{ color:#93c5fd; font-weight:600; }}
-  .legend span {{ display:inline-block; width:12px; height:12px; border-radius:3px; margin-right:6px; }}
+  .legend span {{ display:inline-block; width:12px; height:12px; border-radius:3px; margin-right:6px; vertical-align:middle; }}
 </style>
 </head>
 <body>
@@ -649,8 +709,8 @@ def write_html_report(
     <span style="background:#dc2626;margin-left:12px"></span>M3
     （鼠标悬停可看起止时间）
   </div>
-  <div class="card">{_svg_gantt(serial, "串行轮询 RR", window_ms)}</div>
-  <div class="card">{_svg_gantt(qos, "CBS + SP + soft guard", window_ms)}</div>
+  <div class="card">{_svg_gantt(serial, "串行轮询 RR", window_ms, clip_id="ganttClipRR")}</div>
+  <div class="card">{_svg_gantt(qos, "CBS + SP + soft guard", window_ms, clip_id="ganttClipQoS")}</div>
 
   <h2>4. 数值表</h2>
   <div class="card">
