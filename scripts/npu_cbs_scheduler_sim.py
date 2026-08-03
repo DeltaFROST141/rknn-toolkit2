@@ -418,7 +418,7 @@ def main() -> None:
     p.add_argument("--duration", type=float, default=10.0)
     p.add_argument("--guard-mode", choices=["soft", "hard"], default="soft")
     p.add_argument("--guard-margin", type=float, default=2.0)
-    p.add_argument("--m1-fps", type=float, default=30.0)
+    p.add_argument("--m1-fps", type=float, default=15.0, help="受采集帧率上限约束")
     p.add_argument("--m2-fps", type=float, default=15.0)
     p.add_argument("--m3-fps", type=float, default=5.0)
     p.add_argument("--m1-queue", type=int, default=1, help="M1 队列深度，>1 可追赶补帧")
@@ -449,56 +449,42 @@ def main() -> None:
     )
 
     if args.all_cases:
-        # 硬门控：说明 M3 饿死
+        # 硬门控：M1 周期 66.7ms < M3 70ms，仍会饿死 M3
         print(
             run_case(
                 "对照：硬门控（保护每次 M1 截止期）",
                 [
-                    ModelCfg("M1", 7.0, 30.0, 0),
-                    ModelCfg("M2", 15.0, 15.0, 1),
-                    ModelCfg("M3", 70.0, 5.0, 2),
+                    ModelCfg("M1", 7.0, args.m1_fps, 0),
+                    ModelCfg("M2", 15.0, args.m2_fps, 1),
+                    ModelCfg("M3", 70.0, args.m3_fps, 2),
                 ],
                 args.duration,
                 "hard",
                 args.guard_margin,
             )
         )
-        # 可行平均帧率组合
+        # M1 允许浅缓冲追赶
         print(
             run_case(
-                "对照：可达成目标 M1=20/M2=15/M3=5",
+                "对照：M1 队列深度=2（允许短追赶）",
                 [
-                    ModelCfg("M1", 7.0, 20.0, 0),
-                    ModelCfg("M2", 15.0, 15.0, 1),
-                    ModelCfg("M3", 70.0, 5.0, 2),
+                    ModelCfg("M1", 7.0, args.m1_fps, 0, queue_depth=2),
+                    ModelCfg("M2", 15.0, args.m2_fps, 1),
+                    ModelCfg("M3", 70.0, args.m3_fps, 2),
                 ],
                 args.duration,
                 "soft",
                 args.guard_margin,
             )
         )
-        # M1 允许深度排队追赶（像网络缓冲，不再是纯实时）
+        # 过载：M3 要更高帧率
         print(
             run_case(
-                "对照：M1 队列深度=4（允许追赶，延迟换帧率）",
+                "对照：过载 M3@8fps",
                 [
-                    ModelCfg("M1", 7.0, 30.0, 0, queue_depth=4),
-                    ModelCfg("M2", 15.0, 15.0, 1),
-                    ModelCfg("M3", 70.0, 5.0, 2),
-                ],
-                args.duration,
-                "soft",
-                args.guard_margin,
-            )
-        )
-        # 过载：M3 要 10fps
-        print(
-            run_case(
-                "对照：过载 M3@10fps",
-                [
-                    ModelCfg("M1", 7.0, 30.0, 0),
-                    ModelCfg("M2", 15.0, 15.0, 1),
-                    ModelCfg("M3", 70.0, 10.0, 2),
+                    ModelCfg("M1", 7.0, args.m1_fps, 0),
+                    ModelCfg("M2", 15.0, args.m2_fps, 1),
+                    ModelCfg("M3", 70.0, 8.0, 2),
                 ],
                 args.duration,
                 "soft",
