@@ -1,0 +1,225 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8"/>
+<title>RKNN 单核调度可视化：RR vs CBS+SP+soft</title>
+<style>
+  body { margin:0; font-family: ui-sans-serif, system-ui, sans-serif; background:#020617; color:#e2e8f0; }
+  main { max-width: 980px; margin: 0 auto; padding: 28px 20px 60px; }
+  h1 { font-size: 22px; margin: 0 0 8px; }
+  h2 { font-size: 16px; margin: 28px 0 10px; color:#93c5fd; }
+  .sub { color:#94a3b8; font-size: 13px; line-height: 1.5; white-space: pre-wrap; }
+  .card { background:#0f172a; border:1px solid #1e293b; border-radius:12px; padding:14px; margin:12px 0; overflow:hidden; }
+  .card svg { display:block; width:100%; height:auto; }
+  table { width:100%; border-collapse: collapse; font-size: 13px; }
+  th, td { border-bottom:1px solid #1e293b; padding:8px 6px; text-align:left; }
+  th { color:#93c5fd; font-weight:600; }
+  .legend span { display:inline-block; width:12px; height:12px; border-radius:3px; margin-right:6px; vertical-align:middle; }
+</style>
+</head>
+<body>
+<main>
+  <h1>RKNN 单核调度可视化：RR vs CBS+SP+soft</h1>
+  <div class="sub">参数: M1=7ms@15.0fps(q=1), M2=15ms@15.0fps, M3=70ms@5.0fps, guard=soft, margin=2.0ms, sim=10.0s
+
+【可调度性提示】latest-only + 非抢占:
+  M1 周期=66.67ms, M3 包长=70.0ms, 硬门控要求空隙>=70.0ms → 不可行（hard guard）
+  粗估 M3@5.0fps 时 M1 平均上限 ≈ 15.0 - 5.0*1.05 = 9.8 fps（软门控、SP 下仍会被大包打洞）
+  CIR 账: M1=105 + M3=350 + … 容量够 ≠ 截止期/最新帧帧率够</div>
+
+  <h2>1. 帧率达成</h2>
+  <div class="card"><svg xmlns="http://www.w3.org/2000/svg" width="100%" height="278" viewBox="0 0 920 278" preserveAspectRatio="xMidYMid meet" style="display:block;max-width:100%;height:auto;"><rect width="920" height="278" fill="#0f172a"/>
+<text x="48" y="22" fill="#e2e8f0" font-size="14" font-family="sans-serif">帧率对比</text>
+<rect x="48" y="30" width="12" height="12" rx="2" fill="#475569"/>
+<text x="64" y="40" fill="#94a3b8" font-size="11" font-family="sans-serif">目标</text>
+<rect x="104" y="30" width="12" height="12" rx="2" fill="#f59e0b"/>
+<text x="120" y="40" fill="#94a3b8" font-size="11" font-family="sans-serif">RR</text>
+<rect x="152" y="30" width="12" height="12" rx="2" fill="#22d3ee"/>
+<text x="168" y="40" fill="#94a3b8" font-size="11" font-family="sans-serif">QoS</text>
+<text x="10" y="80.0" fill="#e2e8f0" font-size="13" font-family="sans-serif">M1</text>
+<rect x="48" y="44" width="742" height="64" rx="6" fill="#111827"/>
+<rect x="48.0" y="48.0" width="742.0" height="16" rx="3" fill="#475569"><title>目标 15.00</title></rect>
+<rect x="48.0" y="68.0" width="499.6" height="16" rx="3" fill="#f59e0b"><title>RR 10.10</title></rect>
+<rect x="48.0" y="88.0" width="737.1" height="16" rx="3" fill="#22d3ee"><title>QoS 14.90</title></rect>
+<text x="798" y="60" fill="#94a3b8" font-size="11" font-family="sans-serif">T 15.0</text>
+<text x="798" y="80" fill="#fbbf24" font-size="11" font-family="sans-serif">RR 10.1</text>
+<text x="798" y="100" fill="#67e8f9" font-size="11" font-family="sans-serif">QoS 14.9</text>
+<text x="10" y="154.0" fill="#e2e8f0" font-size="13" font-family="sans-serif">M2</text>
+<rect x="48" y="118" width="742" height="64" rx="6" fill="#111827"/>
+<rect x="48.0" y="122.0" width="742.0" height="16" rx="3" fill="#475569"><title>目标 15.00</title></rect>
+<rect x="48.0" y="142.0" width="499.6" height="16" rx="3" fill="#f59e0b"><title>RR 10.10</title></rect>
+<rect x="48.0" y="162.0" width="737.1" height="16" rx="3" fill="#22d3ee"><title>QoS 14.90</title></rect>
+<text x="798" y="134" fill="#94a3b8" font-size="11" font-family="sans-serif">T 15.0</text>
+<text x="798" y="154" fill="#fbbf24" font-size="11" font-family="sans-serif">RR 10.1</text>
+<text x="798" y="174" fill="#67e8f9" font-size="11" font-family="sans-serif">QoS 14.9</text>
+<text x="10" y="228.0" fill="#e2e8f0" font-size="13" font-family="sans-serif">M3</text>
+<rect x="48" y="192" width="742" height="64" rx="6" fill="#111827"/>
+<rect x="48.0" y="196.0" width="247.3" height="16" rx="3" fill="#475569"><title>目标 5.00</title></rect>
+<rect x="48.0" y="216.0" width="247.3" height="16" rx="3" fill="#f59e0b"><title>RR 5.00</title></rect>
+<rect x="48.0" y="236.0" width="247.3" height="16" rx="3" fill="#22d3ee"><title>QoS 5.00</title></rect>
+<text x="798" y="208" fill="#94a3b8" font-size="11" font-family="sans-serif">T 5.0</text>
+<text x="798" y="228" fill="#fbbf24" font-size="11" font-family="sans-serif">RR 5.0</text>
+<text x="798" y="248" fill="#67e8f9" font-size="11" font-family="sans-serif">QoS 5.0</text>
+</svg></div>
+
+  <h2>2. NPU 链路利用率</h2>
+  <div class="card"><svg xmlns="http://www.w3.org/2000/svg" width="100%" height="130" viewBox="0 0 920 130" preserveAspectRatio="xMidYMid meet" style="display:block;max-width:100%;height:auto;"><rect width="920" height="130" fill="#0f172a"/>
+<text x="48" y="24" fill="#e2e8f0" font-size="14" font-family="sans-serif">链路利用率</text>
+<text x="10" y="60" fill="#e2e8f0" font-size="13" font-family="sans-serif">RR</text><rect x="48" y="44" width="808" height="22" rx="4" fill="#1e293b"/><rect x="48" y="44" width="462.3" height="22" rx="4" fill="#f59e0b"/><text x="864" y="60" fill="#e2e8f0" font-size="12" font-family="sans-serif">57.2%</text>
+<text x="10" y="100" fill="#e2e8f0" font-size="13" font-family="sans-serif">QoS</text><rect x="48" y="84" width="808" height="22" rx="4" fill="#1e293b"/><rect x="48" y="84" width="547.7" height="22" rx="4" fill="#22d3ee"/><text x="864" y="100" fill="#e2e8f0" font-size="12" font-family="sans-serif">67.8%</text>
+</svg></div>
+
+  <h2>3. 调度甘特图（前 1000 ms）</h2>
+  <div class="legend sub" style="margin-bottom:8px">
+    <span style="background:#2563eb"></span>M1
+    <span style="background:#16a34a;margin-left:12px"></span>M2
+    <span style="background:#dc2626;margin-left:12px"></span>M3
+    （鼠标悬停可看起止时间）
+  </div>
+  <div class="card"><svg xmlns="http://www.w3.org/2000/svg" width="100%" height="196" viewBox="0 0 920 196" preserveAspectRatio="xMidYMid meet" style="display:block;max-width:100%;height:auto;"><rect width="920" height="196" fill="#0f172a"/>
+<text x="48" y="24" fill="#e2e8f0" font-size="14" font-family="sans-serif">串行轮询 RR</text>
+<defs><clipPath id="ganttClipRR"><rect x="48" y="40" width="852" height="132"/></clipPath></defs>
+<line x1="48.0" y1="40" x2="48.0" y2="172" stroke="#334155" stroke-width="1"/>
+<text x="48.0" y="190" fill="#94a3b8" font-size="10" text-anchor="middle" font-family="sans-serif">0</text>
+<line x1="133.2" y1="40" x2="133.2" y2="172" stroke="#334155" stroke-width="1"/>
+<text x="133.2" y="190" fill="#94a3b8" font-size="10" text-anchor="middle" font-family="sans-serif">100</text>
+<line x1="218.4" y1="40" x2="218.4" y2="172" stroke="#334155" stroke-width="1"/>
+<text x="218.4" y="190" fill="#94a3b8" font-size="10" text-anchor="middle" font-family="sans-serif">200</text>
+<line x1="303.6" y1="40" x2="303.6" y2="172" stroke="#334155" stroke-width="1"/>
+<text x="303.6" y="190" fill="#94a3b8" font-size="10" text-anchor="middle" font-family="sans-serif">300</text>
+<line x1="388.8" y1="40" x2="388.8" y2="172" stroke="#334155" stroke-width="1"/>
+<text x="388.8" y="190" fill="#94a3b8" font-size="10" text-anchor="middle" font-family="sans-serif">400</text>
+<line x1="474.0" y1="40" x2="474.0" y2="172" stroke="#334155" stroke-width="1"/>
+<text x="474.0" y="190" fill="#94a3b8" font-size="10" text-anchor="middle" font-family="sans-serif">500</text>
+<line x1="559.2" y1="40" x2="559.2" y2="172" stroke="#334155" stroke-width="1"/>
+<text x="559.2" y="190" fill="#94a3b8" font-size="10" text-anchor="middle" font-family="sans-serif">600</text>
+<line x1="644.4" y1="40" x2="644.4" y2="172" stroke="#334155" stroke-width="1"/>
+<text x="644.4" y="190" fill="#94a3b8" font-size="10" text-anchor="middle" font-family="sans-serif">700</text>
+<line x1="729.6" y1="40" x2="729.6" y2="172" stroke="#334155" stroke-width="1"/>
+<text x="729.6" y="190" fill="#94a3b8" font-size="10" text-anchor="middle" font-family="sans-serif">800</text>
+<line x1="814.8" y1="40" x2="814.8" y2="172" stroke="#334155" stroke-width="1"/>
+<text x="814.8" y="190" fill="#94a3b8" font-size="10" text-anchor="middle" font-family="sans-serif">900</text>
+<line x1="900.0" y1="40" x2="900.0" y2="172" stroke="#334155" stroke-width="1"/>
+<text x="900.0" y="190" fill="#94a3b8" font-size="10" text-anchor="middle" font-family="sans-serif">1000</text>
+<g clip-path="url(#ganttClipRR)">
+<text x="10" y="68" fill="#e2e8f0" font-size="13" font-family="sans-serif">M1</text>
+<rect x="48" y="50" width="852" height="24" rx="4" fill="#1e293b"/>
+<rect x="48.00" y="50" width="5.96" height="24" rx="2" fill="#2563eb" stroke="#0f172a" stroke-width="0.8"><title>M1 #1  0.0-7.0ms</title></rect>
+<rect x="126.38" y="50" width="5.96" height="24" rx="2" fill="#2563eb" stroke="#0f172a" stroke-width="0.8"><title>M1 #2  92.0-99.0ms</title></rect>
+<rect x="161.60" y="50" width="5.96" height="24" rx="2" fill="#2563eb" stroke="#0f172a" stroke-width="0.8"><title>M1 #3  133.3-140.3ms</title></rect>
+<rect x="278.04" y="50" width="5.96" height="24" rx="2" fill="#2563eb" stroke="#0f172a" stroke-width="0.8"><title>M1 #5  270.0-277.0ms</title></rect>
+<rect x="332.00" y="50" width="5.96" height="24" rx="2" fill="#2563eb" stroke="#0f172a" stroke-width="0.8"><title>M1 #6  333.3-340.3ms</title></rect>
+<rect x="448.44" y="50" width="5.96" height="24" rx="2" fill="#2563eb" stroke="#0f172a" stroke-width="0.8"><title>M1 #8  470.0-477.0ms</title></rect>
+<rect x="502.40" y="50" width="5.96" height="24" rx="2" fill="#2563eb" stroke="#0f172a" stroke-width="0.8"><title>M1 #9  533.3-540.3ms</title></rect>
+<rect x="618.84" y="50" width="5.96" height="24" rx="2" fill="#2563eb" stroke="#0f172a" stroke-width="0.8"><title>M1 #11  670.0-677.0ms</title></rect>
+<rect x="672.80" y="50" width="5.96" height="24" rx="2" fill="#2563eb" stroke="#0f172a" stroke-width="0.8"><title>M1 #12  733.3-740.3ms</title></rect>
+<rect x="789.24" y="50" width="5.96" height="24" rx="2" fill="#2563eb" stroke="#0f172a" stroke-width="0.8"><title>M1 #14  870.0-877.0ms</title></rect>
+<rect x="843.20" y="50" width="5.96" height="24" rx="2" fill="#2563eb" stroke="#0f172a" stroke-width="0.8"><title>M1 #15  933.3-940.3ms</title></rect>
+<text x="10" y="112" fill="#e2e8f0" font-size="13" font-family="sans-serif">M2</text>
+<rect x="48" y="94" width="852" height="24" rx="4" fill="#1e293b"/>
+<rect x="53.96" y="94" width="12.78" height="24" rx="2" fill="#16a34a" stroke="#0f172a" stroke-width="0.8"><title>M2 #1  7.0-22.0ms</title></rect>
+<rect x="132.35" y="94" width="12.78" height="24" rx="2" fill="#16a34a" stroke="#0f172a" stroke-width="0.8"><title>M2 #2  99.0-114.0ms</title></rect>
+<rect x="167.56" y="94" width="12.78" height="24" rx="2" fill="#16a34a" stroke="#0f172a" stroke-width="0.8"><title>M2 #3  140.3-155.3ms</title></rect>
+<rect x="284.00" y="94" width="12.78" height="24" rx="2" fill="#16a34a" stroke="#0f172a" stroke-width="0.8"><title>M2 #5  277.0-292.0ms</title></rect>
+<rect x="337.96" y="94" width="12.78" height="24" rx="2" fill="#16a34a" stroke="#0f172a" stroke-width="0.8"><title>M2 #6  340.3-355.3ms</title></rect>
+<rect x="454.40" y="94" width="12.78" height="24" rx="2" fill="#16a34a" stroke="#0f172a" stroke-width="0.8"><title>M2 #8  477.0-492.0ms</title></rect>
+<rect x="508.36" y="94" width="12.78" height="24" rx="2" fill="#16a34a" stroke="#0f172a" stroke-width="0.8"><title>M2 #9  540.3-555.3ms</title></rect>
+<rect x="624.80" y="94" width="12.78" height="24" rx="2" fill="#16a34a" stroke="#0f172a" stroke-width="0.8"><title>M2 #11  677.0-692.0ms</title></rect>
+<rect x="678.76" y="94" width="12.78" height="24" rx="2" fill="#16a34a" stroke="#0f172a" stroke-width="0.8"><title>M2 #12  740.3-755.3ms</title></rect>
+<rect x="795.20" y="94" width="12.78" height="24" rx="2" fill="#16a34a" stroke="#0f172a" stroke-width="0.8"><title>M2 #14  877.0-892.0ms</title></rect>
+<rect x="849.16" y="94" width="12.78" height="24" rx="2" fill="#16a34a" stroke="#0f172a" stroke-width="0.8"><title>M2 #15  940.3-955.3ms</title></rect>
+<text x="10" y="156" fill="#e2e8f0" font-size="13" font-family="sans-serif">M3</text>
+<rect x="48" y="138" width="852" height="24" rx="4" fill="#1e293b"/>
+<rect x="66.74" y="138" width="59.64" height="24" rx="2" fill="#dc2626" stroke="#0f172a" stroke-width="0.8"><title>M3 #1  22.0-92.0ms</title></rect>
+<rect x="218.40" y="138" width="59.64" height="24" rx="2" fill="#dc2626" stroke="#0f172a" stroke-width="0.8"><title>M3 #2  200.0-270.0ms</title></rect>
+<rect x="388.80" y="138" width="59.64" height="24" rx="2" fill="#dc2626" stroke="#0f172a" stroke-width="0.8"><title>M3 #3  400.0-470.0ms</title></rect>
+<rect x="559.20" y="138" width="59.64" height="24" rx="2" fill="#dc2626" stroke="#0f172a" stroke-width="0.8"><title>M3 #4  600.0-670.0ms</title></rect>
+<rect x="729.60" y="138" width="59.64" height="24" rx="2" fill="#dc2626" stroke="#0f172a" stroke-width="0.8"><title>M3 #5  800.0-870.0ms</title></rect>
+<rect x="900.00" y="138" width="2.00" height="24" rx="2" fill="#dc2626" stroke="#0f172a" stroke-width="0.8"><title>M3 #6  1000.0-1070.0ms</title></rect>
+</g></svg></div>
+  <div class="card"><svg xmlns="http://www.w3.org/2000/svg" width="100%" height="196" viewBox="0 0 920 196" preserveAspectRatio="xMidYMid meet" style="display:block;max-width:100%;height:auto;"><rect width="920" height="196" fill="#0f172a"/>
+<text x="48" y="24" fill="#e2e8f0" font-size="14" font-family="sans-serif">CBS + SP + soft guard</text>
+<defs><clipPath id="ganttClipQoS"><rect x="48" y="40" width="852" height="132"/></clipPath></defs>
+<line x1="48.0" y1="40" x2="48.0" y2="172" stroke="#334155" stroke-width="1"/>
+<text x="48.0" y="190" fill="#94a3b8" font-size="10" text-anchor="middle" font-family="sans-serif">0</text>
+<line x1="133.2" y1="40" x2="133.2" y2="172" stroke="#334155" stroke-width="1"/>
+<text x="133.2" y="190" fill="#94a3b8" font-size="10" text-anchor="middle" font-family="sans-serif">100</text>
+<line x1="218.4" y1="40" x2="218.4" y2="172" stroke="#334155" stroke-width="1"/>
+<text x="218.4" y="190" fill="#94a3b8" font-size="10" text-anchor="middle" font-family="sans-serif">200</text>
+<line x1="303.6" y1="40" x2="303.6" y2="172" stroke="#334155" stroke-width="1"/>
+<text x="303.6" y="190" fill="#94a3b8" font-size="10" text-anchor="middle" font-family="sans-serif">300</text>
+<line x1="388.8" y1="40" x2="388.8" y2="172" stroke="#334155" stroke-width="1"/>
+<text x="388.8" y="190" fill="#94a3b8" font-size="10" text-anchor="middle" font-family="sans-serif">400</text>
+<line x1="474.0" y1="40" x2="474.0" y2="172" stroke="#334155" stroke-width="1"/>
+<text x="474.0" y="190" fill="#94a3b8" font-size="10" text-anchor="middle" font-family="sans-serif">500</text>
+<line x1="559.2" y1="40" x2="559.2" y2="172" stroke="#334155" stroke-width="1"/>
+<text x="559.2" y="190" fill="#94a3b8" font-size="10" text-anchor="middle" font-family="sans-serif">600</text>
+<line x1="644.4" y1="40" x2="644.4" y2="172" stroke="#334155" stroke-width="1"/>
+<text x="644.4" y="190" fill="#94a3b8" font-size="10" text-anchor="middle" font-family="sans-serif">700</text>
+<line x1="729.6" y1="40" x2="729.6" y2="172" stroke="#334155" stroke-width="1"/>
+<text x="729.6" y="190" fill="#94a3b8" font-size="10" text-anchor="middle" font-family="sans-serif">800</text>
+<line x1="814.8" y1="40" x2="814.8" y2="172" stroke="#334155" stroke-width="1"/>
+<text x="814.8" y="190" fill="#94a3b8" font-size="10" text-anchor="middle" font-family="sans-serif">900</text>
+<line x1="900.0" y1="40" x2="900.0" y2="172" stroke="#334155" stroke-width="1"/>
+<text x="900.0" y="190" fill="#94a3b8" font-size="10" text-anchor="middle" font-family="sans-serif">1000</text>
+<g clip-path="url(#ganttClipQoS)">
+<text x="10" y="68" fill="#e2e8f0" font-size="13" font-family="sans-serif">M1</text>
+<rect x="48" y="50" width="852" height="24" rx="4" fill="#1e293b"/>
+<rect x="48.00" y="50" width="5.96" height="24" rx="2" fill="#2563eb" stroke="#0f172a" stroke-width="0.8"><title>M1 #1  0.0-7.0ms</title></rect>
+<rect x="126.38" y="50" width="5.96" height="24" rx="2" fill="#2563eb" stroke="#0f172a" stroke-width="0.8"><title>M1 #2  92.0-99.0ms</title></rect>
+<rect x="161.60" y="50" width="5.96" height="24" rx="2" fill="#2563eb" stroke="#0f172a" stroke-width="0.8"><title>M1 #3  133.3-140.3ms</title></rect>
+<rect x="231.18" y="50" width="5.96" height="24" rx="2" fill="#2563eb" stroke="#0f172a" stroke-width="0.8"><title>M1 #4  215.0-222.0ms</title></rect>
+<rect x="296.78" y="50" width="5.96" height="24" rx="2" fill="#2563eb" stroke="#0f172a" stroke-width="0.8"><title>M1 #5  292.0-299.0ms</title></rect>
+<rect x="332.00" y="50" width="5.96" height="24" rx="2" fill="#2563eb" stroke="#0f172a" stroke-width="0.8"><title>M1 #6  333.3-340.3ms</title></rect>
+<rect x="401.58" y="50" width="5.96" height="24" rx="2" fill="#2563eb" stroke="#0f172a" stroke-width="0.8"><title>M1 #7  415.0-422.0ms</title></rect>
+<rect x="467.18" y="50" width="5.96" height="24" rx="2" fill="#2563eb" stroke="#0f172a" stroke-width="0.8"><title>M1 #8  492.0-499.0ms</title></rect>
+<rect x="502.40" y="50" width="5.96" height="24" rx="2" fill="#2563eb" stroke="#0f172a" stroke-width="0.8"><title>M1 #9  533.3-540.3ms</title></rect>
+<rect x="571.98" y="50" width="5.96" height="24" rx="2" fill="#2563eb" stroke="#0f172a" stroke-width="0.8"><title>M1 #10  615.0-622.0ms</title></rect>
+<rect x="637.58" y="50" width="5.96" height="24" rx="2" fill="#2563eb" stroke="#0f172a" stroke-width="0.8"><title>M1 #11  692.0-699.0ms</title></rect>
+<rect x="729.60" y="50" width="5.96" height="24" rx="2" fill="#2563eb" stroke="#0f172a" stroke-width="0.8"><title>M1 #13  800.0-807.0ms</title></rect>
+<rect x="807.98" y="50" width="5.96" height="24" rx="2" fill="#2563eb" stroke="#0f172a" stroke-width="0.8"><title>M1 #14  892.0-899.0ms</title></rect>
+<rect x="843.20" y="50" width="5.96" height="24" rx="2" fill="#2563eb" stroke="#0f172a" stroke-width="0.8"><title>M1 #15  933.3-940.3ms</title></rect>
+<rect x="900.00" y="50" width="2.00" height="24" rx="2" fill="#2563eb" stroke="#0f172a" stroke-width="0.8"><title>M1 #16  1000.0-1007.0ms</title></rect>
+<text x="10" y="112" fill="#e2e8f0" font-size="13" font-family="sans-serif">M2</text>
+<rect x="48" y="94" width="852" height="24" rx="4" fill="#1e293b"/>
+<rect x="53.96" y="94" width="12.78" height="24" rx="2" fill="#16a34a" stroke="#0f172a" stroke-width="0.8"><title>M2 #1  7.0-22.0ms</title></rect>
+<rect x="132.35" y="94" width="12.78" height="24" rx="2" fill="#16a34a" stroke="#0f172a" stroke-width="0.8"><title>M2 #2  99.0-114.0ms</title></rect>
+<rect x="167.56" y="94" width="12.78" height="24" rx="2" fill="#16a34a" stroke="#0f172a" stroke-width="0.8"><title>M2 #3  140.3-155.3ms</title></rect>
+<rect x="218.40" y="94" width="12.78" height="24" rx="2" fill="#16a34a" stroke="#0f172a" stroke-width="0.8"><title>M2 #4  200.0-215.0ms</title></rect>
+<rect x="302.75" y="94" width="12.78" height="24" rx="2" fill="#16a34a" stroke="#0f172a" stroke-width="0.8"><title>M2 #5  299.0-314.0ms</title></rect>
+<rect x="337.96" y="94" width="12.78" height="24" rx="2" fill="#16a34a" stroke="#0f172a" stroke-width="0.8"><title>M2 #6  340.3-355.3ms</title></rect>
+<rect x="388.80" y="94" width="12.78" height="24" rx="2" fill="#16a34a" stroke="#0f172a" stroke-width="0.8"><title>M2 #7  400.0-415.0ms</title></rect>
+<rect x="473.15" y="94" width="12.78" height="24" rx="2" fill="#16a34a" stroke="#0f172a" stroke-width="0.8"><title>M2 #8  499.0-514.0ms</title></rect>
+<rect x="508.36" y="94" width="12.78" height="24" rx="2" fill="#16a34a" stroke="#0f172a" stroke-width="0.8"><title>M2 #9  540.3-555.3ms</title></rect>
+<rect x="559.20" y="94" width="12.78" height="24" rx="2" fill="#16a34a" stroke="#0f172a" stroke-width="0.8"><title>M2 #10  600.0-615.0ms</title></rect>
+<rect x="643.55" y="94" width="12.78" height="24" rx="2" fill="#16a34a" stroke="#0f172a" stroke-width="0.8"><title>M2 #11  699.0-714.0ms</title></rect>
+<rect x="735.56" y="94" width="12.78" height="24" rx="2" fill="#16a34a" stroke="#0f172a" stroke-width="0.8"><title>M2 #13  807.0-822.0ms</title></rect>
+<rect x="813.95" y="94" width="12.78" height="24" rx="2" fill="#16a34a" stroke="#0f172a" stroke-width="0.8"><title>M2 #14  899.0-914.0ms</title></rect>
+<rect x="849.16" y="94" width="12.78" height="24" rx="2" fill="#16a34a" stroke="#0f172a" stroke-width="0.8"><title>M2 #15  940.3-955.3ms</title></rect>
+<text x="10" y="156" fill="#e2e8f0" font-size="13" font-family="sans-serif">M3</text>
+<rect x="48" y="138" width="852" height="24" rx="4" fill="#1e293b"/>
+<rect x="66.74" y="138" width="59.64" height="24" rx="2" fill="#dc2626" stroke="#0f172a" stroke-width="0.8"><title>M3 #1  22.0-92.0ms</title></rect>
+<rect x="237.14" y="138" width="59.64" height="24" rx="2" fill="#dc2626" stroke="#0f172a" stroke-width="0.8"><title>M3 #2  222.0-292.0ms</title></rect>
+<rect x="407.54" y="138" width="59.64" height="24" rx="2" fill="#dc2626" stroke="#0f172a" stroke-width="0.8"><title>M3 #3  422.0-492.0ms</title></rect>
+<rect x="577.94" y="138" width="59.64" height="24" rx="2" fill="#dc2626" stroke="#0f172a" stroke-width="0.8"><title>M3 #4  622.0-692.0ms</title></rect>
+<rect x="748.34" y="138" width="59.64" height="24" rx="2" fill="#dc2626" stroke="#0f172a" stroke-width="0.8"><title>M3 #5  822.0-892.0ms</title></rect>
+</g></svg></div>
+
+  <h2>4. 数值表</h2>
+  <div class="card">
+    <table>
+      <thead>
+        <tr>
+          <th>模型</th><th>耗时</th><th>目标fps</th>
+          <th>RR实测</th><th>QoS实测</th>
+          <th>RR丢帧</th><th>QoS丢帧</th><th>QoS门控挡</th>
+        </tr>
+      </thead>
+      <tbody>
+        <tr><td>M1</td><td>7ms</td><td>15.0</td><td>10.10</td><td>14.90</td><td>49</td><td>1</td><td>0</td></tr><tr><td>M2</td><td>15ms</td><td>15.0</td><td>10.10</td><td>14.90</td><td>49</td><td>1</td><td>0</td></tr><tr><td>M3</td><td>70ms</td><td>5.0</td><td>5.00</td><td>5.00</td><td>0</td><td>0</td><td>0</td></tr>
+      </tbody>
+    </table>
+  </div>
+</main>
+</body>
+</html>
