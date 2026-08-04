@@ -1,0 +1,136 @@
+// 将 InferServiceAccl::loop_process 替换为下列实现（QoS 开启时）
+// 依赖：m_qos_enabled / m_qos / 原有队列与模型成员
+
+void InferServiceAccl::loop_process(bool& wakeup_immediately)
+{
+    (void)wakeup_immediately;
+    TaskAccl task;
+    YOLO26Accl* bound_model = nullptr;
+
+    {
+        std::unique_lock<std::mutex> lock(m_queue_mutex);
+
+        for (;;) {
+            m_queue_cv.wait(lock, [&]() {
+                return !m_infer_queue.empty() || should_stop();
+            });
+            if (should_stop()) {
+                return;
+            }
+
+            if (!m_qos_enabled) {
+                // -------- 旧 FIFO 路径（Core1）--------
+                const TaskTypeAccl type = m_infer_queue.front();
+                m_infer_queue.pop_front();
+                const size_t idx = task_index(type);
+                m_in_queue_flag[idx] = false;
+                if (!m_latest_has[idx]) {
+                    return;
+                }
+                task = m_latest_ready[idx];
+                m_latest_has[idx] = false;
+                bound_model = m_models[idx];
+                break;
+            }
+
+            // -------- QoS 路径（Core0）--------
+            // 队列里可能有重复 type；先收成就绪位图，再 pick
+            bool ready[NpuQosSchedulerAccl::kMaxFlows] = {};
+            TaskTypeAccl type_by_index[NpuQosSchedulerAccl::kMaxFlows] = {
+                TaskTypeAccl::PEOPLE_OUTER,
+                TaskTypeAccl::PEOPLE_INNER,
+                TaskTypeAccl::PEOPLE_TOF,
+                TaskTypeAccl::ROPE_MID,
+            };
+
+            // 用 latest_has 做就绪集；队列只负责唤醒，避免 FIFO 顺序绑死
+            while (!m_infer_queue.empty()) {
+                const TaskTypeAccl t = m_infer_queue.front();
+                m_infer_queue.pop_front();
+                m_in_queue_flag[task_index(t)] = false;
+            }
+            for (size_t i = 0; i < kTaskCount; ++i) {
+                ready[i] = m_latest_has[i];
+            }
+
+            TaskTypeAccl picked = TaskTypeAccl::PEOPLE_OUTER;
+            if (!m_qos.pick(ready, type_by_index, kTaskCount, picked)) {
+                // 有帧但被 credit/guard 挡住：短等再看
+                // 重新挂回队列，防止其它 type 饿死在 latest_has 里却无人唤醒
+                for (size_t i = 0; i < kTaskCount; ++i) {
+                    if (m_latest_has[i] && !m_in_queue_flag[i]) {
+                        m_infer_queue.push_back(type_by_index[i]);
+                        m_in_queue_flag[i] = true;
+                    }
+                }
+                const int wait_ms = m_qos.suggest_wait_ms();
+                m_queue_cv.wait_for(lock, std::chrono::milliseconds(wait_ms));
+                if (should_stop()) {
+                    return;
+                }
+                continue;
+            }
+
+            const size_t idx = task_index(picked);
+            if (!m_latest_has[idx]) {
+                continue;
+            }
+            task = m_latest_ready[idx];
+            m_latest_has[idx] = false;
+            bound_model = m_models[idx];
+
+            // 未选中但仍有 latest 的 type 挂回队列，供下次 loop 再 pick
+            for (size_t i = 0; i < kTaskCount; ++i) {
+                if (m_latest_has[i] && !m_in_queue_flag[i]) {
+                    m_infer_queue.push_back(type_by_index[i]);
+                    m_in_queue_flag[i] = true;
+                }
+            }
+            break;
+        }
+
+        if (!bound_model || !bound_model->valid()) {
+            CAM_LOGE(CAM_LOG_MOD_YOLO, "[accl] missing model for task=%d",
+                     static_cast<int>(task.type));
+            if (bound_model) {
+                bound_model->release_input_slot(task.input_slot);
+            }
+            return;
+        }
+    }
+
+    const size_t idx = task_index(task.type);
+    const auto dispatch_start = std::chrono::steady_clock::now();
+    // ... 原有 actual_interval_us / submit_to_start_us / dispatch_gap_us 日志可保留 ...
+    m_last_infer_start[idx] = dispatch_start;
+
+    const auto t_run0 = std::chrono::steady_clock::now();
+    bound_model->run_after_preprocess(task.input_slot);
+    const auto t_run1 = std::chrono::steady_clock::now();
+    const float actual_cost_ms =
+        std::chrono::duration<float, std::milli>(t_run1 - t_run0).count();
+
+    if (m_qos_enabled) {
+        m_qos.on_complete(task.type, actual_cost_ms);
+    }
+
+    m_last_dispatch_end = t_run1;
+    // ... 原有 perf_log_schedule / 写 m_slots / FPS 统计保持不变 ...
+    InferResultAccl result;
+    result.new_result = true;
+    result.frame_idx = task.frame_idx;
+    result.obj = bound_model->getYoloObjects();
+    result.dt = static_cast<float>(
+        std::chrono::duration_cast<std::chrono::milliseconds>(
+            std::chrono::steady_clock::now() - task.submit_tp)
+            .count());
+
+    {
+        std::lock_guard<std::mutex> lock(m_queue_mutex);
+        m_slots[idx] = std::move(result);
+        m_slot_valid[idx].store(true);
+    }
+
+    m_count_infer[idx]++;
+    // print_fps ... 保持原样
+}
